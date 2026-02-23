@@ -493,12 +493,7 @@ class CLIApplication:
         print(f"Error: {message}", file=sys.stderr)
 
 
-def create_argument_parser() -> argparse.ArgumentParser:
-    """Factory function for creating the argument parser."""
-    parser = argparse.ArgumentParser(
-        description="Object Detection Metrics Evaluation CLI",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+CLI_EPILOG = """
 Examples:
   # Pascal VOC evaluation
   %(prog)s --gt-dir ./gts --det-dir ./dets --gt-format pascalvoc --det-format xywh_abs
@@ -525,7 +520,15 @@ Detection Formats:
   xywh_abs   - Text format: <class> <confidence> <x> <y> <w> <h> (absolute)
   xyx2y2_abs - Text format: <class> <confidence> <x1> <y1> <x2> <y2> (absolute)
   yolo_rel   - YOLO format with relative coordinates (requires --images-dir)
-        """,
+"""
+
+
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Factory function for creating the argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Object Detection Metrics Evaluation CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=CLI_EPILOG,
     )
 
     required = parser.add_argument_group("required arguments")

@@ -683,5 +683,236 @@ class TestIntegrationWithExistingTests:
         assert abs(cli_results["coco"]["AP75"] - direct_results["AP75"]) < tol
 
 
+class TestEndToEndCLIWorkflow:
+    """End-to-end integration tests for the complete CLI workflow."""
+
+    def test_e2e_pascal_voc_evaluation_json_output(self):
+        """Test complete workflow: Pascal VOC XML ground truth with text detections, JSON output."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "toyexample/gts_vocpascal_format",
+                "--det-dir", "toyexample/dets_classname_abs_xywh",
+                "--gt-format", "pascalvoc",
+                "--det-format", "xywh_abs",
+                "--metric", "pascal",
+                "--iou", "0.5",
+                "--output-dir", tmpdir,
+                "--output-format", "json",
+                "--quiet",
+            ]
+
+            # Act
+            exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            results_file = os.path.join(tmpdir, "results.json")
+            assert os.path.exists(results_file)
+
+            with open(results_file) as f:
+                results = json.load(f)
+
+            assert "pascal" in results
+            assert "mAP" in results["pascal"]
+            assert results["pascal"]["mAP"] > 0
+            assert "cat" in results["pascal"]["per_class"]
+
+    def test_e2e_coco_evaluation_with_all_metrics(self):
+        """Test complete workflow: COCO format with all metrics computed."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "tests/test_coco_eval/gts",
+                "--det-dir", "tests/test_coco_eval/dets",
+                "--gt-format", "coco",
+                "--det-format", "coco",
+                "--metric", "all",
+                "--output-dir", tmpdir,
+                "--quiet",
+            ]
+
+            # Act
+            exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            results_file = os.path.join(tmpdir, "results.json")
+            assert os.path.exists(results_file)
+
+            with open(results_file) as f:
+                results = json.load(f)
+
+            assert "pascal" in results
+            assert "coco" in results
+            assert abs(results["coco"]["AP"] - 0.503647) < 1e-4
+            assert abs(results["coco"]["AP50"] - 0.696973) < 1e-4
+
+    def test_e2e_pascal_evaluation_with_plots(self):
+        """Test complete workflow: Pascal VOC evaluation with precision-recall plots saved."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "toyexample/gts_vocpascal_format",
+                "--det-dir", "toyexample/dets_classname_abs_xywh",
+                "--gt-format", "pascalvoc",
+                "--det-format", "xywh_abs",
+                "--metric", "pascal",
+                "--output-dir", tmpdir,
+                "--save-plots",
+                "--quiet",
+            ]
+
+            # Act
+            exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            assert os.path.exists(os.path.join(tmpdir, "results.json"))
+            assert os.path.exists(os.path.join(tmpdir, "all_classes.png"))
+            assert os.path.exists(os.path.join(tmpdir, "cat.png"))
+
+    def test_e2e_text_format_ground_truth_and_detections(self):
+        """Test complete workflow: Text format for both ground truth and detections."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "tests/test_case_1/gts",
+                "--det-dir", "tests/test_case_1/dets",
+                "--gt-format", "text_abs",
+                "--det-format", "xywh_abs",
+                "--metric", "pascal",
+                "--iou", "0.5",
+                "--ap-method", "eleven_point",
+                "--output-dir", tmpdir,
+                "--quiet",
+            ]
+
+            # Act
+            exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            results_file = os.path.join(tmpdir, "results.json")
+            with open(results_file) as f:
+                results = json.load(f)
+
+            expected_ap = 0.0303030303
+            assert isclose(results["pascal"]["per_class"]["object"]["AP"], expected_ap, rel_tol=1e-4)
+
+    def test_e2e_table_output_format(self):
+        """Test complete workflow with table output format to stdout."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_case_1/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--metric", "all",
+            "--output-format", "table",
+            "--quiet",
+        ]
+
+        # Act
+        import io
+        from contextlib import redirect_stdout
+
+        captured_output = io.StringIO()
+        with redirect_stdout(captured_output):
+            exit_code = main(args)
+
+        output = captured_output.getvalue()
+
+        # Assert
+        assert exit_code == 0
+        assert "PASCAL VOC Metrics" in output
+        assert "COCO Metrics" in output
+        assert "mAP @" in output
+        assert "object" in output
+
+    def test_e2e_multiple_iou_thresholds(self):
+        """Test evaluation at different IoU thresholds produces expected results."""
+        # Arrange
+        iou_values = [0.1, 0.3, 0.5, 0.75]
+        expected_aps = {
+            0.1: 0.3333333333,
+            0.3: 0.2683982683,
+            0.5: 0.0303030303,
+            0.75: 0.0
+        }
+
+        for iou in iou_values:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = [
+                    "--gt-dir", "tests/test_case_1/gts",
+                    "--det-dir", "tests/test_case_1/dets",
+                    "--gt-format", "text_abs",
+                    "--det-format", "xywh_abs",
+                    "--metric", "pascal",
+                    "--iou", str(iou),
+                    "--ap-method", "eleven_point",
+                    "--output-dir", tmpdir,
+                    "--quiet",
+                ]
+
+                # Act
+                exit_code = main(args)
+
+                # Assert
+                assert exit_code == 0
+                with open(os.path.join(tmpdir, "results.json")) as f:
+                    results = json.load(f)
+
+                actual_ap = results["pascal"]["per_class"]["object"]["AP"]
+                assert isclose(actual_ap, expected_aps[iou], rel_tol=1e-6), \
+                    f"IoU {iou}: expected {expected_aps[iou]}, got {actual_ap}"
+
+    def test_e2e_invalid_directory_returns_error(self):
+        """Test that invalid input directories return proper error code."""
+        # Arrange
+        args = [
+            "--gt-dir", "/nonexistent/path/to/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--quiet",
+        ]
+
+        # Act
+        import io
+        from contextlib import redirect_stderr
+
+        captured_stderr = io.StringIO()
+        with redirect_stderr(captured_stderr):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 1
+        assert "not found" in captured_stderr.getvalue().lower()
+
+    def test_e2e_empty_annotations_returns_error(self):
+        """Test that empty annotation directories return proper error code."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as empty_dir:
+            args = [
+                "--gt-dir", empty_dir,
+                "--det-dir", "tests/test_case_1/dets",
+                "--gt-format", "text_abs",
+                "--det-format", "xywh_abs",
+                "--quiet",
+            ]
+
+            # Act
+            import io
+            from contextlib import redirect_stderr
+
+            captured_stderr = io.StringIO()
+            with redirect_stderr(captured_stderr):
+                exit_code = main(args)
+
+            # Assert
+            assert exit_code == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
