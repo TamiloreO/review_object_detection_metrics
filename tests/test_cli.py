@@ -683,5 +683,282 @@ class TestIntegrationWithExistingTests:
         assert abs(cli_results["coco"]["AP75"] - direct_results["AP75"]) < tol
 
 
+class TestEndToEndCLI:
+    """End-to-end integration tests for the full CLI workflow."""
+
+    def test_e2e_pascal_voc_text_format_json_output(self):
+        """Full workflow: text annotations -> Pascal VOC metrics -> JSON output."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_case_1/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--metric", "pascal",
+            "--iou", "0.5",
+            "--output-format", "json",
+            "--quiet",
+        ]
+
+        # Act
+        captured_output = []
+        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 0
+        output_json = json.loads(captured_output[0])
+        assert "pascal" in output_json
+        assert "mAP" in output_json["pascal"]
+        assert "per_class" in output_json["pascal"]
+        assert output_json["pascal"]["iou_threshold"] == 0.5
+        assert 0.0 <= output_json["pascal"]["mAP"] <= 1.0
+
+    def test_e2e_coco_format_full_metrics(self):
+        """Full workflow: COCO annotations -> COCO metrics -> JSON output."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_coco_eval/gts",
+            "--det-dir", "tests/test_coco_eval/dets",
+            "--gt-format", "coco",
+            "--det-format", "coco",
+            "--metric", "coco",
+            "--output-format", "json",
+            "--quiet",
+        ]
+
+        # Act
+        captured_output = []
+        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 0
+        output_json = json.loads(captured_output[0])
+        assert "coco" in output_json
+        coco_metrics = output_json["coco"]
+        expected_keys = ["AP", "AP50", "AP75", "APsmall", "APmedium", "APlarge",
+                         "AR1", "AR10", "AR100", "ARsmall", "ARmedium", "ARlarge"]
+        for key in expected_keys:
+            assert key in coco_metrics
+
+    def test_e2e_all_metrics_table_output(self):
+        """Full workflow: compute all metrics with table output format."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_case_1/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--metric", "all",
+            "--output-format", "table",
+            "--quiet",
+        ]
+
+        # Act
+        captured_output = []
+        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 0
+        output = captured_output[0]
+        assert "PASCAL VOC Metrics" in output
+        assert "COCO Metrics" in output
+        assert "mAP @" in output
+        assert "AP (IoU=0.50:0.95)" in output
+
+    def test_e2e_with_output_directory_saves_files(self):
+        """Full workflow: evaluation results saved to output directory."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "tests/test_case_1/gts",
+                "--det-dir", "tests/test_case_1/dets",
+                "--gt-format", "text_abs",
+                "--det-format", "xywh_abs",
+                "--output-dir", tmpdir,
+                "--metric", "pascal",
+                "--quiet",
+            ]
+
+            # Act
+            with patch("builtins.print"):
+                exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            results_file = os.path.join(tmpdir, "results.json")
+            assert os.path.exists(results_file)
+
+            with open(results_file) as f:
+                saved_results = json.load(f)
+            assert "pascal" in saved_results
+            assert "mAP" in saved_results["pascal"]
+
+    def test_e2e_with_plots_generation(self):
+        """Full workflow: evaluation with precision-recall plots saved."""
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = [
+                "--gt-dir", "toyexample/gts_vocpascal_format",
+                "--det-dir", "toyexample/dets_classname_abs_xywh",
+                "--gt-format", "pascalvoc",
+                "--det-format", "xywh_abs",
+                "--output-dir", tmpdir,
+                "--metric", "pascal",
+                "--save-plots",
+                "--quiet",
+            ]
+
+            # Act
+            with patch("builtins.print"):
+                exit_code = main(args)
+
+            # Assert
+            assert exit_code == 0
+            assert os.path.exists(os.path.join(tmpdir, "results.json"))
+            assert os.path.exists(os.path.join(tmpdir, "all_classes.png"))
+            assert os.path.exists(os.path.join(tmpdir, "cat.png"))
+
+    def test_e2e_different_iou_thresholds(self):
+        """Full workflow: verify different IoU thresholds produce different results."""
+        # Arrange
+        results_by_iou = {}
+
+        for iou in ["0.1", "0.5", "0.75"]:
+            args = [
+                "--gt-dir", "tests/test_case_1/gts",
+                "--det-dir", "tests/test_case_1/dets",
+                "--gt-format", "text_abs",
+                "--det-format", "xywh_abs",
+                "--metric", "pascal",
+                "--iou", iou,
+                "--quiet",
+            ]
+
+            captured_output = []
+            with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+                exit_code = main(args)
+
+            assert exit_code == 0
+            results_by_iou[iou] = json.loads(captured_output[0])["pascal"]["mAP"]
+
+        # Assert: mAP should generally decrease as IoU threshold increases
+        assert results_by_iou["0.1"] >= results_by_iou["0.5"]
+        assert results_by_iou["0.5"] >= results_by_iou["0.75"]
+
+    def test_e2e_eleven_point_vs_every_point_interpolation(self):
+        """Full workflow: compare 11-point and every-point AP interpolation methods."""
+        # Arrange
+        results_by_method = {}
+
+        for method in ["every_point", "eleven_point"]:
+            args = [
+                "--gt-dir", "tests/test_case_1/gts",
+                "--det-dir", "tests/test_case_1/dets",
+                "--gt-format", "text_abs",
+                "--det-format", "xywh_abs",
+                "--metric", "pascal",
+                "--ap-method", method,
+                "--quiet",
+            ]
+
+            captured_output = []
+            with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+                exit_code = main(args)
+
+            assert exit_code == 0
+            results_by_method[method] = json.loads(captured_output[0])
+
+        # Assert: both methods should produce valid results
+        assert results_by_method["every_point"]["pascal"]["method"] == "every_point"
+        assert results_by_method["eleven_point"]["pascal"]["method"] == "eleven_point"
+        # Results may differ slightly between methods
+        assert 0.0 <= results_by_method["every_point"]["pascal"]["mAP"] <= 1.0
+        assert 0.0 <= results_by_method["eleven_point"]["pascal"]["mAP"] <= 1.0
+
+    def test_e2e_pascalvoc_xml_ground_truth(self):
+        """Full workflow: Pascal VOC XML ground truth format."""
+        # Arrange
+        args = [
+            "--gt-dir", "toyexample/gts_vocpascal_format",
+            "--det-dir", "toyexample/dets_classname_abs_xywh",
+            "--gt-format", "pascalvoc",
+            "--det-format", "xywh_abs",
+            "--metric", "pascal",
+            "--quiet",
+        ]
+
+        # Act
+        captured_output = []
+        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 0
+        output_json = json.loads(captured_output[0])
+        assert output_json["pascal"]["mAP"] > 0.8  # Known good performance on toy example
+
+    def test_e2e_invalid_ground_truth_directory_fails(self):
+        """Full workflow: graceful failure on invalid ground truth directory."""
+        # Arrange
+        args = [
+            "--gt-dir", "/nonexistent/path/to/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--quiet",
+        ]
+
+        # Act
+        with patch("builtins.print"):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 1
+
+    def test_e2e_invalid_detection_directory_fails(self):
+        """Full workflow: graceful failure on invalid detection directory."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_case_1/gts",
+            "--det-dir", "/nonexistent/path/to/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--quiet",
+        ]
+
+        # Act
+        with patch("builtins.print"):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 1
+
+    def test_e2e_progress_messages_shown_without_quiet(self):
+        """Full workflow: progress messages displayed when not in quiet mode."""
+        # Arrange
+        args = [
+            "--gt-dir", "tests/test_case_1/gts",
+            "--det-dir", "tests/test_case_1/dets",
+            "--gt-format", "text_abs",
+            "--det-format", "xywh_abs",
+            "--metric", "pascal",
+        ]
+
+        # Act
+        captured_output = []
+        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(str(x))):
+            exit_code = main(args)
+
+        # Assert
+        assert exit_code == 0
+        all_output = "\n".join(captured_output)
+        assert "Loading ground truth" in all_output
+        assert "Loading detection" in all_output
+        assert "Evaluating" in all_output
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
