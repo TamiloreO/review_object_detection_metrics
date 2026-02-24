@@ -270,7 +270,7 @@ class MetricsEvaluator:
             det_annotations,
             iou_threshold=self._config.iou_threshold,
             method=method,
-            generate_table=True,
+            generate_table=False,
         )
 
         per_class = {}
@@ -288,6 +288,7 @@ class MetricsEvaluator:
             "per_class": per_class,
             "iou_threshold": self._config.iou_threshold,
             "method": self._config.ap_method.value,
+            "_raw_results": results,  # Store for plot generation
         }
 
     def _evaluate_coco(
@@ -363,38 +364,24 @@ class PlotGenerator:
     def __init__(self, config: CLIConfig):
         self._config = config
 
-    def generate(
-        self, gt_annotations: List, det_annotations: List, results: Dict[str, Any]
-    ) -> None:
+    def generate(self, results: Dict[str, Any]) -> None:
         if not self._config.save_plots or not self._config.output_dir:
             return
 
-        if "pascal" not in results:
+        if "pascal" not in results or "_raw_results" not in results["pascal"]:
             return
 
-        method = (
-            MethodAveragePrecision.EVERY_POINT_INTERPOLATION
-            if self._config.ap_method == APInterpolationMethod.EVERY_POINT
-            else MethodAveragePrecision.ELEVEN_POINT_INTERPOLATION
-        )
-
-        pascal_results = get_pascalvoc_metrics(
-            gt_annotations,
-            det_annotations,
-            iou_threshold=self._config.iou_threshold,
-            method=method,
-            generate_table=False,
-        )
+        raw_results = results["pascal"]["_raw_results"]
 
         plot_precision_recall_curve(
-            pascal_results["per_class"],
-            mAP=pascal_results["mAP"],
+            raw_results["per_class"],
+            mAP=raw_results["mAP"],
             savePath=self._config.output_dir,
             showGraphic=False,
         )
 
         plot_precision_recall_curves(
-            pascal_results["per_class"],
+            raw_results["per_class"],
             showAP=True,
             savePath=self._config.output_dir,
             showGraphic=False,
@@ -417,7 +404,7 @@ class CLIApplication:
             gt_annotations = self._load_ground_truth()
             det_annotations = self._load_detections()
             results = self._evaluate(gt_annotations, det_annotations)
-            self._generate_plots(gt_annotations, det_annotations, results)
+            self._generate_plots(results)
             self._output_results(results)
             return 0
         except (AnnotationLoadError, ConfigurationError) as e:
@@ -470,24 +457,33 @@ class CLIApplication:
             print(f"Evaluating with metric: {self._config.metric.value}")
         return self._evaluator.evaluate(gt_annotations, det_annotations)
 
-    def _generate_plots(
-        self, gt_annotations: List, det_annotations: List, results: Dict[str, Any]
-    ) -> None:
+    def _generate_plots(self, results: Dict[str, Any]) -> None:
         if self._config.save_plots and self._config.output_dir:
             if not self._config.quiet:
                 print(f"Saving plots to: {self._config.output_dir}")
-            self._plot_generator.generate(gt_annotations, det_annotations, results)
+            self._plot_generator.generate(results)
 
     def _output_results(self, results: Dict[str, Any]) -> None:
-        output = ResultsFormatter.format(results, self._config.output_format)
+        clean_results = self._strip_internal_data(results)
+        output = ResultsFormatter.format(clean_results, self._config.output_format)
         print(output)
 
         if self._config.output_dir:
             output_file = os.path.join(self._config.output_dir, "results.json")
             with open(output_file, "w") as f:
-                f.write(ResultsFormatter.format(results, "json"))
+                f.write(ResultsFormatter.format(clean_results, "json"))
             if not self._config.quiet:
                 print(f"Results saved to: {output_file}")
+
+    def _strip_internal_data(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove internal data not meant for output."""
+        clean = {}
+        for key, value in results.items():
+            if isinstance(value, dict):
+                clean[key] = {k: v for k, v in value.items() if not k.startswith("_")}
+            else:
+                clean[key] = value
+        return clean
 
     def _print_error(self, message: str) -> None:
         print(f"Error: {message}", file=sys.stderr)

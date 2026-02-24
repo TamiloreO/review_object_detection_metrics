@@ -12,9 +12,11 @@ Tests follow the AAA pattern (Arrange, Act, Assert) and cover:
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from math import isclose
+from typing import List
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -684,12 +686,21 @@ class TestIntegrationWithExistingTests:
 
 
 class TestEndToEndCLI:
-    """End-to-end integration tests for the full CLI workflow."""
+    """End-to-end integration tests using subprocess for realistic CLI simulation."""
+
+    @staticmethod
+    def run_cli(args: List[str]) -> subprocess.CompletedProcess:
+        """Helper to run CLI as subprocess."""
+        return subprocess.run(
+            [sys.executable, "cli.py"] + args,
+            capture_output=True,
+            text=True,
+        )
 
     def test_e2e_pascal_voc_text_format_json_output(self):
         """Full workflow: text annotations -> Pascal VOC metrics -> JSON output."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "tests/test_case_1/gts",
             "--det-dir", "tests/test_case_1/dets",
             "--gt-format", "text_abs",
@@ -698,16 +709,11 @@ class TestEndToEndCLI:
             "--iou", "0.5",
             "--output-format", "json",
             "--quiet",
-        ]
-
-        # Act
-        captured_output = []
-        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 0
-        output_json = json.loads(captured_output[0])
+        assert result.returncode == 0
+        output_json = json.loads(result.stdout)
         assert "pascal" in output_json
         assert "mAP" in output_json["pascal"]
         assert "per_class" in output_json["pascal"]
@@ -716,8 +722,8 @@ class TestEndToEndCLI:
 
     def test_e2e_coco_format_full_metrics(self):
         """Full workflow: COCO annotations -> COCO metrics -> JSON output."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "tests/test_coco_eval/gts",
             "--det-dir", "tests/test_coco_eval/dets",
             "--gt-format", "coco",
@@ -725,16 +731,11 @@ class TestEndToEndCLI:
             "--metric", "coco",
             "--output-format", "json",
             "--quiet",
-        ]
-
-        # Act
-        captured_output = []
-        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 0
-        output_json = json.loads(captured_output[0])
+        assert result.returncode == 0
+        output_json = json.loads(result.stdout)
         assert "coco" in output_json
         coco_metrics = output_json["coco"]
         expected_keys = ["AP", "AP50", "AP75", "APsmall", "APmedium", "APlarge",
@@ -744,8 +745,8 @@ class TestEndToEndCLI:
 
     def test_e2e_all_metrics_table_output(self):
         """Full workflow: compute all metrics with table output format."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "tests/test_case_1/gts",
             "--det-dir", "tests/test_case_1/dets",
             "--gt-format", "text_abs",
@@ -753,26 +754,20 @@ class TestEndToEndCLI:
             "--metric", "all",
             "--output-format", "table",
             "--quiet",
-        ]
-
-        # Act
-        captured_output = []
-        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 0
-        output = captured_output[0]
-        assert "PASCAL VOC Metrics" in output
-        assert "COCO Metrics" in output
-        assert "mAP @" in output
-        assert "AP (IoU=0.50:0.95)" in output
+        assert result.returncode == 0
+        assert "PASCAL VOC Metrics" in result.stdout
+        assert "COCO Metrics" in result.stdout
+        assert "mAP @" in result.stdout
+        assert "AP (IoU=0.50:0.95)" in result.stdout
 
     def test_e2e_with_output_directory_saves_files(self):
         """Full workflow: evaluation results saved to output directory."""
-        # Arrange
         with tempfile.TemporaryDirectory() as tmpdir:
-            args = [
+            # Act
+            result = self.run_cli([
                 "--gt-dir", "tests/test_case_1/gts",
                 "--det-dir", "tests/test_case_1/dets",
                 "--gt-format", "text_abs",
@@ -780,14 +775,10 @@ class TestEndToEndCLI:
                 "--output-dir", tmpdir,
                 "--metric", "pascal",
                 "--quiet",
-            ]
-
-            # Act
-            with patch("builtins.print"):
-                exit_code = main(args)
+            ])
 
             # Assert
-            assert exit_code == 0
+            assert result.returncode == 0
             results_file = os.path.join(tmpdir, "results.json")
             assert os.path.exists(results_file)
 
@@ -798,9 +789,9 @@ class TestEndToEndCLI:
 
     def test_e2e_with_plots_generation(self):
         """Full workflow: evaluation with precision-recall plots saved."""
-        # Arrange
         with tempfile.TemporaryDirectory() as tmpdir:
-            args = [
+            # Act
+            result = self.run_cli([
                 "--gt-dir", "toyexample/gts_vocpascal_format",
                 "--det-dir", "toyexample/dets_classname_abs_xywh",
                 "--gt-format", "pascalvoc",
@@ -809,25 +800,20 @@ class TestEndToEndCLI:
                 "--metric", "pascal",
                 "--save-plots",
                 "--quiet",
-            ]
-
-            # Act
-            with patch("builtins.print"):
-                exit_code = main(args)
+            ])
 
             # Assert
-            assert exit_code == 0
+            assert result.returncode == 0
             assert os.path.exists(os.path.join(tmpdir, "results.json"))
             assert os.path.exists(os.path.join(tmpdir, "all_classes.png"))
             assert os.path.exists(os.path.join(tmpdir, "cat.png"))
 
     def test_e2e_different_iou_thresholds(self):
         """Full workflow: verify different IoU thresholds produce different results."""
-        # Arrange
         results_by_iou = {}
 
         for iou in ["0.1", "0.5", "0.75"]:
-            args = [
+            result = self.run_cli([
                 "--gt-dir", "tests/test_case_1/gts",
                 "--det-dir", "tests/test_case_1/dets",
                 "--gt-format", "text_abs",
@@ -835,14 +821,10 @@ class TestEndToEndCLI:
                 "--metric", "pascal",
                 "--iou", iou,
                 "--quiet",
-            ]
+            ])
 
-            captured_output = []
-            with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-                exit_code = main(args)
-
-            assert exit_code == 0
-            results_by_iou[iou] = json.loads(captured_output[0])["pascal"]["mAP"]
+            assert result.returncode == 0
+            results_by_iou[iou] = json.loads(result.stdout)["pascal"]["mAP"]
 
         # Assert: mAP should generally decrease as IoU threshold increases
         assert results_by_iou["0.1"] >= results_by_iou["0.5"]
@@ -850,11 +832,10 @@ class TestEndToEndCLI:
 
     def test_e2e_eleven_point_vs_every_point_interpolation(self):
         """Full workflow: compare 11-point and every-point AP interpolation methods."""
-        # Arrange
         results_by_method = {}
 
         for method in ["every_point", "eleven_point"]:
-            args = [
+            result = self.run_cli([
                 "--gt-dir", "tests/test_case_1/gts",
                 "--det-dir", "tests/test_case_1/dets",
                 "--gt-format", "text_abs",
@@ -862,102 +843,104 @@ class TestEndToEndCLI:
                 "--metric", "pascal",
                 "--ap-method", method,
                 "--quiet",
-            ]
+            ])
 
-            captured_output = []
-            with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-                exit_code = main(args)
-
-            assert exit_code == 0
-            results_by_method[method] = json.loads(captured_output[0])
+            assert result.returncode == 0
+            results_by_method[method] = json.loads(result.stdout)
 
         # Assert: both methods should produce valid results
         assert results_by_method["every_point"]["pascal"]["method"] == "every_point"
         assert results_by_method["eleven_point"]["pascal"]["method"] == "eleven_point"
-        # Results may differ slightly between methods
         assert 0.0 <= results_by_method["every_point"]["pascal"]["mAP"] <= 1.0
         assert 0.0 <= results_by_method["eleven_point"]["pascal"]["mAP"] <= 1.0
 
     def test_e2e_pascalvoc_xml_ground_truth(self):
         """Full workflow: Pascal VOC XML ground truth format."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "toyexample/gts_vocpascal_format",
             "--det-dir", "toyexample/dets_classname_abs_xywh",
             "--gt-format", "pascalvoc",
             "--det-format", "xywh_abs",
             "--metric", "pascal",
             "--quiet",
-        ]
-
-        # Act
-        captured_output = []
-        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(x)):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 0
-        output_json = json.loads(captured_output[0])
+        assert result.returncode == 0
+        output_json = json.loads(result.stdout)
         assert output_json["pascal"]["mAP"] > 0.8  # Known good performance on toy example
 
     def test_e2e_invalid_ground_truth_directory_fails(self):
         """Full workflow: graceful failure on invalid ground truth directory."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "/nonexistent/path/to/gts",
             "--det-dir", "tests/test_case_1/dets",
             "--gt-format", "text_abs",
             "--det-format", "xywh_abs",
             "--quiet",
-        ]
-
-        # Act
-        with patch("builtins.print"):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 1
+        assert result.returncode == 1
+        assert "Error" in result.stderr
 
     def test_e2e_invalid_detection_directory_fails(self):
         """Full workflow: graceful failure on invalid detection directory."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "tests/test_case_1/gts",
             "--det-dir", "/nonexistent/path/to/dets",
             "--gt-format", "text_abs",
             "--det-format", "xywh_abs",
             "--quiet",
-        ]
-
-        # Act
-        with patch("builtins.print"):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 1
+        assert result.returncode == 1
+        assert "Error" in result.stderr
 
     def test_e2e_progress_messages_shown_without_quiet(self):
         """Full workflow: progress messages displayed when not in quiet mode."""
-        # Arrange
-        args = [
+        # Act
+        result = self.run_cli([
             "--gt-dir", "tests/test_case_1/gts",
             "--det-dir", "tests/test_case_1/dets",
             "--gt-format", "text_abs",
             "--det-format", "xywh_abs",
             "--metric", "pascal",
-        ]
-
-        # Act
-        captured_output = []
-        with patch("builtins.print", side_effect=lambda x, **kwargs: captured_output.append(str(x))):
-            exit_code = main(args)
+        ])
 
         # Assert
-        assert exit_code == 0
-        all_output = "\n".join(captured_output)
-        assert "Loading ground truth" in all_output
-        assert "Loading detection" in all_output
-        assert "Evaluating" in all_output
+        assert result.returncode == 0
+        assert "Loading ground truth" in result.stdout
+        assert "Loading detection" in result.stdout
+        assert "Evaluating" in result.stdout
+
+    def test_e2e_help_flag_shows_usage(self):
+        """Full workflow: --help flag displays usage information."""
+        # Act
+        result = self.run_cli(["--help"])
+
+        # Assert
+        assert result.returncode == 0
+        assert "Object Detection Metrics Evaluation CLI" in result.stdout
+        assert "--gt-dir" in result.stdout
+        assert "--det-dir" in result.stdout
+        assert "Examples:" in result.stdout
+
+    def test_e2e_missing_required_args_shows_error(self):
+        """Full workflow: missing required arguments shows error."""
+        # Act
+        result = self.run_cli([
+            "--gt-dir", "tests/test_case_1/gts",
+            # Missing --det-dir, --gt-format, --det-format
+        ])
+
+        # Assert
+        assert result.returncode != 0
+        assert "required" in result.stderr.lower()
 
 
 if __name__ == "__main__":
