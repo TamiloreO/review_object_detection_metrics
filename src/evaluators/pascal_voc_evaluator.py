@@ -1,6 +1,7 @@
 import os
 import sys
 from collections import Counter
+from typing import Dict, List, Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -79,6 +80,212 @@ def calculate_ap_11_point_interp(rec, prec, recall_vals=11):
     return [ap, rhoInterp, recallValues, None]
 
 
+def group_boxes_by_class(
+    gt_boxes: List[BoundingBox],
+    det_boxes: List[BoundingBox]
+) -> Tuple[Dict[str, Dict[str, List[BoundingBox]]], List[str]]:
+    """Group ground truth and detection boxes by class.
+    
+    Returns:
+        Tuple of (classes_bbs dict, list of GT-only class IDs)
+    """
+    gt_classes_only = []
+    classes_bbs = {}
+    
+    for bb in gt_boxes:
+        c = bb.get_class_id()
+        gt_classes_only.append(c)
+        classes_bbs.setdefault(c, {'gt': [], 'det': []})
+        classes_bbs[c]['gt'].append(bb)
+    gt_classes_only = list(set(gt_classes_only))
+    
+    for bb in det_boxes:
+        c = bb.get_class_id()
+        classes_bbs.setdefault(c, {'gt': [], 'det': []})
+        classes_bbs[c]['det'].append(bb)
+    
+    return classes_bbs, gt_classes_only
+
+
+def match_detections_to_ground_truth(
+    detections: List[BoundingBox],
+    ground_truths: List[BoundingBox],
+    iou_threshold: float,
+    generate_table: bool = False
+) -> Tuple[np.ndarray, np.ndarray, Optional[Dict[str, List]]]:
+    """Match detections to ground truths and compute TP/FP arrays.
+    
+    Returns:
+        Tuple of (TP array, FP array, optional table dict for DataFrame)
+    """
+    # Sort detections by decreasing confidence
+    dects = sorted(detections, key=lambda bb: bb.get_confidence(), reverse=True)
+    
+    TP = np.zeros(len(dects))
+    FP = np.zeros(len(dects))
+    
+    # Create dictionary with amount of expected detections for each image
+    detected_gt_per_image = Counter([bb.get_image_name() for bb in ground_truths])
+    for key, val in detected_gt_per_image.items():
+        detected_gt_per_image[key] = np.zeros(val)
+    
+    dict_table = None
+    if generate_table:
+        dict_table = {
+            'image': [],
+            'confidence': [],
+            'TP': [],
+            'FP': [],
+            'acc TP': [],
+            'acc FP': [],
+            'precision': [],
+            'recall': []
+        }
+    
+    for idx_det, det in enumerate(dects):
+        img_det = det.get_image_name()
+        
+        if generate_table:
+            dict_table['image'].append(img_det)
+            dict_table['confidence'].append(f'{100*det.get_confidence():.2f}%')
+        
+        # Find ground truth boxes for this image
+        gt = [g for g in ground_truths if g.get_image_name() == img_det]
+        
+        # Get the maximum IoU among all ground truths in the image
+        iouMax = sys.float_info.min
+        id_match_gt = -1
+        
+        for j, g in enumerate(gt):
+            iou = BoundingBox.iou(det, g)
+            if iou > iouMax:
+                iouMax = iou
+                id_match_gt = j
+        
+        # Assign detection as TP or FP
+        if iouMax >= iou_threshold and id_match_gt >= 0:
+            if detected_gt_per_image[img_det][id_match_gt] == 0:
+                TP[idx_det] = 1
+                detected_gt_per_image[img_det][id_match_gt] = 1
+                if generate_table:
+                    dict_table['TP'].append(1)
+                    dict_table['FP'].append(0)
+            else:
+                FP[idx_det] = 1
+                if generate_table:
+                    dict_table['FP'].append(1)
+                    dict_table['TP'].append(0)
+        else:
+            FP[idx_det] = 1
+            if generate_table:
+                dict_table['FP'].append(1)
+                dict_table['TP'].append(0)
+    
+    return TP, FP, dict_table
+
+
+def compute_precision_recall(
+    TP: np.ndarray,
+    FP: np.ndarray,
+    npos: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute precision and recall from TP/FP arrays.
+    
+    Returns:
+        Tuple of (precision, recall, accumulated TP, accumulated FP)
+    """
+    acc_FP = np.cumsum(FP)
+    acc_TP = np.cumsum(TP)
+    rec = acc_TP / npos
+    prec = np.divide(acc_TP, (acc_FP + acc_TP))
+    return prec, rec, acc_TP, acc_FP
+
+
+def compute_average_precision(
+    rec: np.ndarray,
+    prec: np.ndarray,
+    method: MethodAveragePrecision
+) -> Tuple[float, Any, Any, Any]:
+    """Compute average precision using the specified interpolation method.
+    
+    Returns:
+        Tuple of (AP, interpolated precision, interpolated recall, indices)
+    """
+    if method == MethodAveragePrecision.EVERY_POINT_INTERPOLATION:
+        return calculate_ap_every_point(rec, prec)
+    elif method == MethodAveragePrecision.ELEVEN_POINT_INTERPOLATION:
+        return calculate_ap_11_point_interp(rec, prec)
+    else:
+        raise ValueError(f'Unknown AP calculation method: {method}')
+
+
+def build_results_table(
+    dict_table: Dict[str, List],
+    acc_TP: np.ndarray,
+    acc_FP: np.ndarray,
+    prec: np.ndarray,
+    rec: np.ndarray
+) -> pd.DataFrame:
+    """Build a pandas DataFrame from detection results."""
+    dict_table['acc TP'] = list(acc_TP)
+    dict_table['acc FP'] = list(acc_FP)
+    dict_table['precision'] = list(prec)
+    dict_table['recall'] = list(rec)
+    return pd.DataFrame(dict_table)
+
+
+def evaluate_class(
+    class_gt_boxes: List[BoundingBox],
+    class_det_boxes: List[BoundingBox],
+    iou_threshold: float,
+    method: MethodAveragePrecision,
+    generate_table: bool = False
+) -> Dict[str, Any]:
+    """Evaluate metrics for a single class.
+    
+    Returns:
+        Dictionary containing precision, recall, AP, and other metrics for the class.
+    """
+    npos = len(class_gt_boxes)
+    
+    TP, FP, dict_table = match_detections_to_ground_truth(
+        class_det_boxes,
+        class_gt_boxes,
+        iou_threshold,
+        generate_table
+    )
+    
+    prec, rec, acc_TP, acc_FP = compute_precision_recall(TP, FP, npos)
+    
+    table = None
+    if generate_table and dict_table is not None:
+        table = build_results_table(dict_table, acc_TP, acc_FP, prec, rec)
+    
+    ap, mpre, mrec, ii = compute_average_precision(rec, prec, method)
+    
+    return {
+        'precision': prec,
+        'recall': rec,
+        'AP': ap,
+        'interpolated precision': mpre,
+        'interpolated recall': mrec,
+        'total positives': npos,
+        'total TP': np.sum(TP),
+        'total FP': np.sum(FP),
+        'method': method,
+        'iou': iou_threshold,
+        'table': table
+    }
+
+
+def compute_map(
+    per_class_results: Dict[str, Dict[str, Any]],
+    gt_classes_only: List[str]
+) -> float:
+    """Compute mean Average Precision across all GT classes."""
+    return sum([v['AP'] for k, v in per_class_results.items() if k in gt_classes_only]) / len(gt_classes_only)
+
+
 def get_pascalvoc_metrics(gt_boxes,
                           det_boxes,
                           iou_threshold=0.5,
@@ -101,126 +308,24 @@ def get_pascalvoc_metrics(gt_boxes,
         dict['total positives']: total number of ground truth positives;
         dict['total TP']: total number of True Positive detections;
         dict['total FP']: total number of False Positive detections;"""
+    
+    classes_bbs, gt_classes_only = group_boxes_by_class(gt_boxes, det_boxes)
+    
     ret = {}
-    # Get classes of all bounding boxes separating them by classes
-    gt_classes_only = []
-    classes_bbs = {}
-    for bb in gt_boxes:
-        c = bb.get_class_id()
-        gt_classes_only.append(c)
-        classes_bbs.setdefault(c, {'gt': [], 'det': []})
-        classes_bbs[c]['gt'].append(bb)
-    gt_classes_only = list(set(gt_classes_only))
-    for bb in det_boxes:
-        c = bb.get_class_id()
-        classes_bbs.setdefault(c, {'gt': [], 'det': []})
-        classes_bbs[c]['det'].append(bb)
-
-    # Precision x Recall is obtained individually by each class
     for c, v in classes_bbs.items():
-        # Report results only in the classes that are in the GT
+        # Report results only for classes present in GT
         if c not in gt_classes_only:
             continue
-        npos = len(v['gt'])
-        # sort detections by decreasing confidence
-        dects = [a for a in sorted(v['det'], key=lambda bb: bb.get_confidence(), reverse=True)]
-        TP = np.zeros(len(dects))
-        FP = np.zeros(len(dects))
-        # create dictionary with amount of expected detections for each image
-        detected_gt_per_image = Counter([bb.get_image_name() for bb in gt_boxes])
-        for key, val in detected_gt_per_image.items():
-            detected_gt_per_image[key] = np.zeros(val)
-        # print(f'Evaluating class: {c}')
-        dict_table = {
-            'image': [],
-            'confidence': [],
-            'TP': [],
-            'FP': [],
-            'acc TP': [],
-            'acc FP': [],
-            'precision': [],
-            'recall': []
-        }
-        # Loop through detections
-        for idx_det, det in enumerate(dects):
-            img_det = det.get_image_name()
-
-            if generate_table:
-                dict_table['image'].append(img_det)
-                dict_table['confidence'].append(f'{100*det.get_confidence():.2f}%')
-
-            # Find ground truth image
-            gt = [gt for gt in classes_bbs[c]['gt'] if gt.get_image_name() == img_det]
-            # Get the maximum iou among all detectins in the image
-            iouMax = sys.float_info.min
-            # Given the detection det, find ground-truth with the highest iou
-            for j, g in enumerate(gt):
-                # print('Ground truth gt => %s' %
-                #       str(g.get_absolute_bounding_box(format=BBFormat.XYX2Y2)))
-                iou = BoundingBox.iou(det, g)
-                if iou > iouMax:
-                    iouMax = iou
-                    id_match_gt = j
-            # Assign detection as TP or FP
-            if iouMax >= iou_threshold:
-                # gt was not matched with any detection
-                if detected_gt_per_image[img_det][id_match_gt] == 0:
-                    TP[idx_det] = 1  # detection is set as true positive
-                    detected_gt_per_image[img_det][
-                        id_match_gt] = 1  # set flag to identify gt as already 'matched'
-                    # print("TP")
-                    if generate_table:
-                        dict_table['TP'].append(1)
-                        dict_table['FP'].append(0)
-                else:
-                    FP[idx_det] = 1  # detection is set as false positive
-                    if generate_table:
-                        dict_table['FP'].append(1)
-                        dict_table['TP'].append(0)
-                    # print("FP")
-            # - A detected "cat" is overlaped with a GT "cat" with IOU >= iou_threshold.
-            else:
-                FP[idx_det] = 1  # detection is set as false positive
-                if generate_table:
-                    dict_table['FP'].append(1)
-                    dict_table['TP'].append(0)
-                # print("FP")
-        # compute precision, recall and average precision
-        acc_FP = np.cumsum(FP)
-        acc_TP = np.cumsum(TP)
-        rec = acc_TP / npos
-        prec = np.divide(acc_TP, (acc_FP + acc_TP))
-        if generate_table:
-            dict_table['acc TP'] = list(acc_TP)
-            dict_table['acc FP'] = list(acc_FP)
-            dict_table['precision'] = list(prec)
-            dict_table['recall'] = list(rec)
-            table = pd.DataFrame(dict_table)
-        else:
-            table = None
-        # Depending on the method, call the right implementation
-        if method == MethodAveragePrecision.EVERY_POINT_INTERPOLATION:
-            [ap, mpre, mrec, ii] = calculate_ap_every_point(rec, prec)
-        elif method == MethodAveragePrecision.ELEVEN_POINT_INTERPOLATION:
-            [ap, mpre, mrec, _] = calculate_ap_11_point_interp(rec, prec)
-        else:
-            Exception('method not defined')
-        # add class result in the dictionary to be returned
-        ret[c] = {
-            'precision': prec,
-            'recall': rec,
-            'AP': ap,
-            'interpolated precision': mpre,
-            'interpolated recall': mrec,
-            'total positives': npos,
-            'total TP': np.sum(TP),
-            'total FP': np.sum(FP),
-            'method': method,
-            'iou': iou_threshold,
-            'table': table
-        }
-    # For mAP, only the classes in the gt set should be considered
-    mAP = sum([v['AP'] for k, v in ret.items() if k in gt_classes_only]) / len(gt_classes_only)
+        
+        ret[c] = evaluate_class(
+            v['gt'],
+            v['det'],
+            iou_threshold,
+            method,
+            generate_table
+        )
+    
+    mAP = compute_map(ret, gt_classes_only)
     return {'per_class': ret, 'mAP': mAP}
 
 
