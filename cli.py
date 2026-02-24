@@ -242,6 +242,7 @@ class MetricsEvaluator:
 
     def __init__(self, config: CLIConfig):
         self._config = config
+        self._raw_pascal_results = None
 
     def evaluate(
         self, gt_annotations: List, det_annotations: List
@@ -256,6 +257,10 @@ class MetricsEvaluator:
 
         return results
 
+    def get_raw_pascal_results(self) -> Optional[Dict[str, Any]]:
+        """Returns the raw Pascal VOC results for use by PlotGenerator."""
+        return self._raw_pascal_results
+
     def _evaluate_pascal(
         self, gt_annotations: List, det_annotations: List
     ) -> Dict[str, Any]:
@@ -265,7 +270,7 @@ class MetricsEvaluator:
             else MethodAveragePrecision.ELEVEN_POINT_INTERPOLATION
         )
 
-        results = get_pascalvoc_metrics(
+        self._raw_pascal_results = get_pascalvoc_metrics(
             gt_annotations,
             det_annotations,
             iou_threshold=self._config.iou_threshold,
@@ -274,7 +279,7 @@ class MetricsEvaluator:
         )
 
         per_class = {}
-        for class_id, class_results in results["per_class"].items():
+        for class_id, class_results in self._raw_pascal_results["per_class"].items():
             per_class[class_id] = {
                 "AP": float(class_results["AP"]),
                 "total_positives": int(class_results["total positives"]),
@@ -284,7 +289,7 @@ class MetricsEvaluator:
             }
 
         return {
-            "mAP": float(results["mAP"]),
+            "mAP": float(self._raw_pascal_results["mAP"]),
             "per_class": per_class,
             "iou_threshold": self._config.iou_threshold,
             "method": self._config.ap_method.value,
@@ -363,38 +368,22 @@ class PlotGenerator:
     def __init__(self, config: CLIConfig):
         self._config = config
 
-    def generate(
-        self, gt_annotations: List, det_annotations: List, results: Dict[str, Any]
-    ) -> None:
+    def generate(self, raw_pascal_results: Optional[Dict[str, Any]]) -> None:
         if not self._config.save_plots or not self._config.output_dir:
             return
 
-        if "pascal" not in results:
+        if raw_pascal_results is None:
             return
 
-        method = (
-            MethodAveragePrecision.EVERY_POINT_INTERPOLATION
-            if self._config.ap_method == APInterpolationMethod.EVERY_POINT
-            else MethodAveragePrecision.ELEVEN_POINT_INTERPOLATION
-        )
-
-        pascal_results = get_pascalvoc_metrics(
-            gt_annotations,
-            det_annotations,
-            iou_threshold=self._config.iou_threshold,
-            method=method,
-            generate_table=False,
-        )
-
         plot_precision_recall_curve(
-            pascal_results["per_class"],
-            mAP=pascal_results["mAP"],
+            raw_pascal_results["per_class"],
+            mAP=raw_pascal_results["mAP"],
             savePath=self._config.output_dir,
             showGraphic=False,
         )
 
         plot_precision_recall_curves(
-            pascal_results["per_class"],
+            raw_pascal_results["per_class"],
             showAP=True,
             savePath=self._config.output_dir,
             showGraphic=False,
@@ -417,7 +406,7 @@ class CLIApplication:
             gt_annotations = self._load_ground_truth()
             det_annotations = self._load_detections()
             results = self._evaluate(gt_annotations, det_annotations)
-            self._generate_plots(gt_annotations, det_annotations, results)
+            self._generate_plots()
             self._output_results(results)
             return 0
         except (AnnotationLoadError, ConfigurationError) as e:
@@ -470,13 +459,11 @@ class CLIApplication:
             print(f"Evaluating with metric: {self._config.metric.value}")
         return self._evaluator.evaluate(gt_annotations, det_annotations)
 
-    def _generate_plots(
-        self, gt_annotations: List, det_annotations: List, results: Dict[str, Any]
-    ) -> None:
+    def _generate_plots(self) -> None:
         if self._config.save_plots and self._config.output_dir:
             if not self._config.quiet:
                 print(f"Saving plots to: {self._config.output_dir}")
-            self._plot_generator.generate(gt_annotations, det_annotations, results)
+            self._plot_generator.generate(self._evaluator.get_raw_pascal_results())
 
     def _output_results(self, results: Dict[str, Any]) -> None:
         output = ResultsFormatter.format(results, self._config.output_format)
