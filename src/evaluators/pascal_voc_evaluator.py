@@ -80,7 +80,7 @@ def calculate_ap_11_point_interp(rec, prec, recall_vals=11):
     return [ap, rhoInterp, recallValues, None]
 
 
-def group_boxes_by_class(
+def _group_boxes_by_class(
     gt_boxes: List[BoundingBox],
     det_boxes: List[BoundingBox]
 ) -> Tuple[Dict[str, Dict[str, List[BoundingBox]]], List[str]]:
@@ -107,7 +107,7 @@ def group_boxes_by_class(
     return classes_bbs, gt_classes_only
 
 
-def match_detections_to_ground_truth(
+def _match_detections_to_ground_truth(
     detections: List[BoundingBox],
     ground_truths: List[BoundingBox],
     iou_threshold: float,
@@ -184,7 +184,7 @@ def match_detections_to_ground_truth(
     return TP, FP, dict_table
 
 
-def compute_precision_recall(
+def _compute_precision_recall(
     TP: np.ndarray,
     FP: np.ndarray,
     npos: int
@@ -201,7 +201,7 @@ def compute_precision_recall(
     return prec, rec, acc_TP, acc_FP
 
 
-def compute_average_precision(
+def _compute_average_precision(
     rec: np.ndarray,
     prec: np.ndarray,
     method: MethodAveragePrecision
@@ -219,7 +219,7 @@ def compute_average_precision(
         raise ValueError(f'Unknown AP calculation method: {method}')
 
 
-def build_results_table(
+def _build_results_table(
     dict_table: Dict[str, List],
     acc_TP: np.ndarray,
     acc_FP: np.ndarray,
@@ -234,7 +234,7 @@ def build_results_table(
     return pd.DataFrame(dict_table)
 
 
-def evaluate_class(
+def _evaluate_class(
     class_gt_boxes: List[BoundingBox],
     class_det_boxes: List[BoundingBox],
     iou_threshold: float,
@@ -248,20 +248,20 @@ def evaluate_class(
     """
     npos = len(class_gt_boxes)
     
-    TP, FP, dict_table = match_detections_to_ground_truth(
+    TP, FP, dict_table = _match_detections_to_ground_truth(
         class_det_boxes,
         class_gt_boxes,
         iou_threshold,
         generate_table
     )
     
-    prec, rec, acc_TP, acc_FP = compute_precision_recall(TP, FP, npos)
+    prec, rec, acc_TP, acc_FP = _compute_precision_recall(TP, FP, npos)
     
     table = None
     if generate_table and dict_table is not None:
-        table = build_results_table(dict_table, acc_TP, acc_FP, prec, rec)
+        table = _build_results_table(dict_table, acc_TP, acc_FP, prec, rec)
     
-    ap, mpre, mrec, ii = compute_average_precision(rec, prec, method)
+    ap, mpre, mrec, ii = _compute_average_precision(rec, prec, method)
     
     return {
         'precision': prec,
@@ -278,7 +278,7 @@ def evaluate_class(
     }
 
 
-def compute_map(
+def _compute_map(
     per_class_results: Dict[str, Dict[str, Any]],
     gt_classes_only: List[str]
 ) -> float:
@@ -309,7 +309,7 @@ def get_pascalvoc_metrics(gt_boxes,
         dict['total TP']: total number of True Positive detections;
         dict['total FP']: total number of False Positive detections;"""
     
-    classes_bbs, gt_classes_only = group_boxes_by_class(gt_boxes, det_boxes)
+    classes_bbs, gt_classes_only = _group_boxes_by_class(gt_boxes, det_boxes)
     
     ret = {}
     for c, v in classes_bbs.items():
@@ -317,7 +317,7 @@ def get_pascalvoc_metrics(gt_boxes,
         if c not in gt_classes_only:
             continue
         
-        ret[c] = evaluate_class(
+        ret[c] = _evaluate_class(
             v['gt'],
             v['det'],
             iou_threshold,
@@ -325,7 +325,7 @@ def get_pascalvoc_metrics(gt_boxes,
             generate_table
         )
     
-    mAP = compute_map(ret, gt_classes_only)
+    mAP = _compute_map(ret, gt_classes_only)
     return {'per_class': ret, 'mAP': mAP}
 
 
